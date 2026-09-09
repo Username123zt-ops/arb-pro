@@ -117,22 +117,13 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;b
 .section-title{font-size:11px;color:var(--muted);text-transform:uppercase;letter-spacing:1px;margin-bottom:12px;font-weight:600}
 .mini-btn{background:var(--card);color:var(--text);border:1px solid var(--border);padding:7px 12px;border-radius:8px;font-size:12px;cursor:pointer;font-family:inherit}
 .mini-btn-warn{background:rgba(255,59,48,.1);color:var(--danger);border:1px solid rgba(255,59,48,.25);padding:7px 12px;border-radius:8px;font-size:12px;cursor:pointer;font-family:inherit}
-.gate{display:none;text-align:center;padding:80px 24px}
-.gate.show{display:block}
-.gate .brand{font-size:28px;font-weight:800;letter-spacing:-0.5px;margin-bottom:20px}
-.gate .brand .dot{color:var(--muted);font-weight:400}
-.gate p{font-size:14px;color:var(--dim);line-height:1.6}
-.gate .bot{font-size:15px;color:var(--accent);font-weight:600;margin-top:8px;font-family:Menlo,Consolas,monospace}
+.preview-banner{display:none;background:var(--surface);color:var(--dim);padding:10px 16px;font-size:12px;text-align:center;border-bottom:1px solid var(--border)}
 </style>
 </head>
 <body>
 <div id="toast" class="toast"></div>
-<div class="gate" id="gate">
-<div class="brand">Arb<span class="dot">.pro</span></div>
-<p>Откройте приложение через бота,<br>чтобы профиль привязался автоматически</p>
-<div class="bot">@ArbCryptoPro_bot</div>
-</div>
-<div class="app" id="app" style="display:none">
+<div class="preview-banner" id="previewBanner">Демо-режим: откройте приложение через бота, чтобы профиль привязался к Telegram</div>
+<div class="app" id="app">
 <div class="header">
 <div class="header-logo">Arb<span class="dot">.pro</span></div>
 <div class="header-right">
@@ -291,26 +282,29 @@ let tg=window.Telegram?.WebApp;
 let user=null;
 let balance=0;
 let isAdmin=false;
+let isTelegramUser=false;
 let pollTimer=null;
 
 function init(){
 if(tg){tg.ready();tg.expand();if(tg.setHeaderColor)tg.setHeaderColor('#0a0a0a');if(tg.setBackgroundColor)tg.setBackgroundColor('#0a0a0a')}
-let rawInit=tg?.initData||'';
-fetch('/api/init',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({initData:rawInit})}).then(r=>r.json()).then(d=>{
-if(!d.is_telegram||!d.user){
-document.getElementById('gate').classList.add('show');
-return;
+let ud=tg?.initDataUnsafe?.user;
+if(!ud){
+ud={id:12345678,first_name:'Демо',last_name:'Пользователь',username:'demo',photo_url:'data:image/svg+xml,%3Csvg xmlns=%27http://www.w3.org/2000/svg%27 width=%27128%27 height=%27128%27%3E%3Crect width=%27128%27 height=%27128%27 fill=%27%23111111%27/%3E%3Ctext x=%2764%27 y=%2780%27 font-size=%2750%27 fill=%27%23ffffff%27 text-anchor=%27middle%27 font-family=%27sans-serif%27%3EA%3C/text%3E%3C/svg%3E'};
 }
-user=d.user;
+user=ud;
+let realClient=!!(tg&&tg.initDataUnsafe&&tg.initDataUnsafe.user);
+let rawInit=tg?.initData||'';
+fetch('/api/init',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({id:user.id,first_name:user.first_name,last_name:user.last_name||'',username:user.username||'',photo_url:user.photo_url||'',initData:rawInit})}).then(r=>r.json()).then(d=>{
+isTelegramUser=(!!d.is_telegram)||realClient;
 balance=d.balance||0;
 isAdmin=d.is_admin||false;
-document.getElementById('gate').classList.remove('show');
-document.getElementById('app').style.display='block';
+if(d.user&&d.user.id){user=d.user}
 let nameText=[user.first_name,user.last_name].filter(Boolean).join(' ')||'Пользователь';
 document.getElementById('hdrAvatar').src=user.photo_url||'';
 document.getElementById('profAvatar').src=user.photo_url||'';
 document.getElementById('profName').textContent=nameText;
-document.getElementById('profId').textContent='ID: '+user.id;
+document.getElementById('profId').textContent='ID: '+(isTelegramUser?user.id:'не определён (демо)');
+if(!isTelegramUser)document.getElementById('previewBanner').style.display='block';
 if(isAdmin)renderAdmin();
 loadAll();
 startPoll();
@@ -709,23 +703,28 @@ def healthz():
 @app.route('/api/init', methods=['POST'])
 def api_init():
     d = request.json
+    real = None
+    uid = d.get('id')
     vuser = validate_init_data(d.get('initData', ''))
-    if not isinstance(vuser, dict) or not vuser.get('id'):
-        return jsonify({'is_telegram': False})
-    uid = vuser['id']
-    ensure_user(uid, vuser.get('first_name', ''), vuser.get('last_name', ''),
-                vuser.get('username', ''), vuser.get('photo_url', ''))
+    if isinstance(vuser, dict) and vuser.get('id'):
+        real = vuser
+        uid = vuser['id']
+        ensure_user(uid, vuser.get('first_name', ''), vuser.get('last_name', ''),
+                    vuser.get('username', ''), vuser.get('photo_url', ''))
+    elif uid:
+        ensure_user(uid, d.get('first_name', ''), d.get('last_name', ''),
+                    d.get('username', ''), d.get('photo_url', ''))
     conn = get_db()
     row = conn.execute("SELECT balance, is_admin FROM users WHERE id=?", (uid,)).fetchone()
     conn.close()
-    return jsonify({
-        'is_telegram': True,
-        'is_admin': bool(row and row['is_admin']),
-        'balance': row['balance'] if row else 0,
-        'user': {'id': vuser['id'], 'first_name': vuser.get('first_name', ''),
-                 'last_name': vuser.get('last_name', ''), 'username': vuser.get('username', ''),
-                 'photo_url': vuser.get('photo_url', '')}
-    })
+    resp = {'balance': row['balance'] if row else 0,
+            'is_admin': bool(row and row['is_admin']),
+            'is_telegram': bool(real)}
+    if real:
+        resp['user'] = {'id': real['id'], 'first_name': real.get('first_name', ''),
+                        'last_name': real.get('last_name', ''), 'username': real.get('username', ''),
+                        'photo_url': real.get('photo_url', '')}
+    return jsonify(resp)
 
 @app.route('/api/bundles')
 def api_bundles():
